@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TranscreveAI — Transcrição Inteligente de Áudios e Vídeos</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Barra Lateral -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="22" />
+          </svg>
+        </div>
+        <div>
+          <h1>TranscreveAI</h1>
+          <span class="brand-sub">Áudio &amp; Vídeo → TXT · DOCX · PDF</span>
+        </div>
+      </div>
+
+      <button id="btn-new-transcription" class="btn btn-primary btn-full">
+        <span>＋ Nova Transcrição</span>
+      </button>
+
+      <div id="hardware-badge" class="hw-badge">
+        <span class="dot"></span>
+        <span id="hardware-text">Verificando hardware...</span>
+      </div>
+
+      <div class="sidebar-section-header">
+        <span>Histórico</span>
+        <span id="history-count" class="pill-count">0</span>
+      </div>
+
+      <input
+        id="history-search"
+        type="search"
+        class="input-search"
+        placeholder="Filtrar histórico..."
+      />
+
+      <div id="history-list" class="history-list">
+        <div class="empty-hint">Nenhuma transcrição salva ainda.</div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="btn-open-exports" class="btn btn-ghost btn-small btn-full" title="Abrir pasta exportacoes no Windows Explorer">
+          📁 Abrir Pasta de Exportações
+        </button>
+      </div>
+    </aside>
+
+    <!-- Área Principal -->
+    <main class="main-area">
+      <!-- VIEW 1: NOVA TRANSCRIÇÃO -->
+      <section id="view-upload" class="view active">
+        <header class="view-header">
+          <div>
+            <h2>Nova Transcrição</h2>
+            <p class="subtitle">
+              Envie um arquivo de vídeo ou áudio em Português ou Inglês para transcrever com separação automática de locutores.
+            </p>
+          </div>
+        </header>
+
+        <div class="card upload-card">
+          <!-- Zona Drag & Drop -->
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Selecionar arquivo de áudio ou vídeo">
+            <input
+              id="file-input"
+              type="file"
+              accept="audio/*,video/*,.mp4,.mkv,.avi,.mov,.webm,.wmv,.flv,.m4v,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma,.opus"
+              hidden
+            />
+            <div class="dropzone-icon">🎙️</div>
+            <div id="dropzone-empty">
+              <p class="dropzone-title">Arraste e solte seu vídeo ou áudio aqui</p>
+              <p class="dropzone-hint">ou <strong>clique para escolher</strong> no computador</p>
+              <p class="dropzone-formats">
+                MP4 · MKV · MOV · AVI · WEBM · MP3 · WAV · M4A · OGG · FLAC · AAC · OPUS
+              </p>
+            </div>
+            <div id="dropzone-selected" class="file-preview hidden">
+              <div class="file-badge" id="selected-file-type">VÍDEO</div>
+              <div class="file-meta">
+                <strong id="selected-file-name">arquivo.mp4</strong>
+                <span id="selected-file-size">0 MB</span>
+              </div>
+              <button type="button" id="btn-clear-file" class="btn btn-ghost btn-small">Trocar</button>
+            </div>
+          </div>
+
+          <!-- Configurações -->
+          <div class="options-grid">
+            <div class="field">
+              <label for="opt-language">Idioma principal</label>
+              <select id="opt-language" class="select-input">
+                <option value="auto" selected>Detecção Automática (PT / EN / Outros)</option>
+                <option value="pt">Português (PT-BR / PT) — maior precisão em PT</option>
+                <option value="en">Inglês (EN) — maior precisão em EN</option>
+                <option value="es">Espanhol (ES)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="opt-model">Modelo Whisper (OpenAI)</label>
+              <select id="opt-model" class="select-input">
+                <option value="large-v3-turbo" selected>Large v3 Turbo (Recomendado — Rápido e Muito Preciso)</option>
+                <option value="large-v3">Large v3 (Precisão Máxima — áudios difíceis/técnicos)</option>
+                <option value="large-v2">Large v2 (Alta Estabilidade em PT-BR)</option>
+                <option value="medium">Medium (Equilibrado)</option>
+                <option value="small">Small (Rápido / Ideal para CPU)</option>
+                <option value="base">Base (Ultrarrápido / Testes)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="opt-quality">Modo de Precisão Whisper</label>
+              <select id="opt-quality" class="select-input">
+                <option value="high" selected>Qualidade Máxima (FP16 + Beam 8 + Anti-alucinação)</option>
+                <option value="balanced">Equilibrado (Mais rápido, menor uso de memória)</option>
+              </select>
+            </div>
+
+            <div class="field" style="justify-content: center;">
+              <label class="switch-label" style="margin-top: 14px;">
+                <input id="opt-enhance-audio" type="checkbox" />
+                <span>
+                  <strong>Aprimorar áudio antes de transcrever</strong>
+                  <small>Normaliza volume e filtra ruídos graves/agudos (recomendado para gravações baixas ou ruidosas).</small>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Diarização -->
+          <div class="diarization-box">
+            <div class="diarization-toggle-row">
+              <label class="switch-label">
+                <input id="opt-diarization" type="checkbox" checked />
+                <span class="switch-slider"></span>
+                <span>
+                  <strong>Identificar Locutores (Dividir parágrafos por pessoa)</strong>
+                  <small>100% local e gratuito — separa automaticamente quem está falando em cada parágrafo.</small>
+                </span>
+              </label>
+            </div>
+
+            <div id="diarization-options" class="diarization-subgrid">
+              <div class="field">
+                <label for="opt-num-speakers">Número de locutores</label>
+                <select id="opt-num-speakers" class="select-input">
+                  <option value="auto" selected>Detectar automaticamente</option>
+                  <option value="2">2 locutores (ex: entrevista)</option>
+                  <option value="3">3 locutores</option>
+                  <option value="4">4 locutores</option>
+                  <option value="5">5 locutores</option>
+                  <option value="6">6 locutores</option>
+                  <option value="7">7 locutores</option>
+                  <option value="8">8 locutores</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="opt-diarization-quality">Precisão do reconhecimento de voz</label>
+                <select id="opt-diarization-quality" class="select-input">
+                  <option value="standard" selected>Padrão — WeSpeaker ResNet34 (26 MB, rápido)</option>
+                  <option value="high">Alta Precisão — WeSpeaker ResNet293 (105 MB, vozes parecidas)</option>
+                </select>
+              </div>
+              <div class="field" style="grid-column: 1 / -1;">
+                <label for="opt-threshold">
+                  Sensibilidade de separação: <strong id="threshold-value">0.65</strong>
+                </label>
+                <input id="opt-threshold" type="range" min="0.40" max="0.85" step="0.05" value="0.65" />
+                <div class="range-legend">
+                  <span>Mais locutores</span>
+                  <span>Equilibrado</span>
+                  <span>Menos locutores</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Contexto / Vocabulário opcional -->
+          <details class="advanced-details">
+            <summary>Opções avançadas (nomes próprios, termos técnicos ou siglas)</summary>
+            <div class="field" style="margin-top: 12px;">
+              <label for="opt-prompt">Vocabulário de apoio (opcional)</label>
+              <textarea
+                id="opt-prompt"
+                rows="2"
+                class="text-input"
+                placeholder="Ex.: Reunião com Dr. Rafael Almeida sobre API REST, Kubernetes e KPIs trimestrais..."
+              ></textarea>
+              <small class="field-hint">Ajuda o modelo a grafar corretamente nomes de pessoas, empresas ou jargões específicos.</small>
+            </div>
+          </details>
+
+          <div class="actions-bar">
+            <button id="btn-start-transcribe" class="btn btn-primary btn-large" disabled>
+              ▶ Iniciar Transcrição
+            </button>
+          </div>
+        </div>
+
+        <!-- Painel de Progresso -->
+        <div id="progress-panel" class="card progress-card hidden">
+          <div class="progress-header">
+            <div>
+              <h3 id="progress-title">Processando arquivo...</h3>
+              <p id="progress-message" class="progress-msg">Preparando pipeline...</p>
+            </div>
+            <div class="progress-stats">
+              <span id="progress-percent" class="progress-pct">0%</span>
+              <span id="progress-elapsed" class="progress-timer">00:00</span>
+            </div>
+          </div>
+
+          <div class="progress-bar-track">
+            <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+
+          <div class="stage-steps">
+            <div class="stage-step" data-stage="extracting">1. Extrair Áudio</div>
+            <div class="stage-step" data-stage="transcribing">2. Transcrever Fala</div>
+            <div class="stage-step" data-stage="diarizing">3. Identificar Locutores</div>
+            <div class="stage-step" data-stage="aligning">4. Organizar Parágrafos</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: RESULTADO, EDITOR & EXPORTAÇÃO -->
+      <section id="view-editor" class="view">
+        <div class="editor-topbar">
+          <div class="title-block">
+            <input id="doc-title-input" class="doc-title-input" type="text" value="Transcrição" aria-label="Título da transcrição" />
+            <div id="doc-badges" class="doc-badges"></div>
+          </div>
+          <div class="topbar-actions">
+            <button id="btn-save-edits" class="btn btn-secondary" disabled>💾 Salvar Alterações</button>
+            <button id="btn-delete-doc" class="btn btn-danger-ghost" title="Excluir esta transcrição">🗑️</button>
+          </div>
+        </div>
+
+        <div id="diarization-warning-banner" class="warning-banner hidden"></div>
+
+        <!-- Barra de Exportação -->
+        <div class="card export-panel">
+          <div class="export-left">
+            <span class="export-label">Exportar transcrição:</span>
+            <div class="export-buttons">
+              <button class="btn btn-export btn-txt" data-export="txt">📄 Baixar TXT</button>
+              <button class="btn btn-export btn-docx" data-export="docx">📘 Baixar DOCX (Word)</button>
+              <button class="btn btn-export btn-pdf" data-export="pdf">📕 Baixar PDF</button>
+              <button id="btn-copy-text" class="btn btn-ghost">📋 Copiar Texto</button>
+            </div>
+          </div>
+          <div class="export-options">
+            <label><input id="exp-timestamps" type="checkbox" checked /> Horários</label>
+            <label><input id="exp-metadata" type="checkbox" checked /> Cabeçalho/Resumo</label>
+            <label><input id="exp-speakers" type="checkbox" checked /> Nomes dos locutores</label>
+            <label title="Também grava o arquivo em G:\Meu Drive\Antigravity Projects\TranscricaoAudios\exportacoes"><input id="exp-save-copy" type="checkbox" checked /> Salvar na pasta <code>exportacoes/</code></label>
+          </div>
+        </div>
+
+        <!-- Grade Principal: Player + Locutores à esquerda/topo e Parágrafos -->
+        <div class="editor-layout">
+          <div class="editor-tools-col">
+            <!-- Player de Mídia Sincronizado -->
+            <div id="media-card" class="card media-card hidden">
+              <div class="card-header-mini">
+                <strong>Player Sincronizado</strong>
+                <span class="hint-mini">Clique em qualquer parágrafo para ouvir</span>
+              </div>
+              <video id="video-player" class="media-player hidden" controls preload="metadata"></video>
+              <audio id="audio-player" class="media-player hidden" controls preload="metadata"></audio>
+            </div>
+
+            <!-- Painel de Locutores -->
+            <div id="speakers-card" class="card speakers-card">
+              <div class="card-header-mini">
+                <strong>Locutores Identificados</strong>
+                <span class="hint-mini">Renomeie para atualizar todo o documento</span>
+              </div>
+              <div id="speakers-list" class="speakers-list"></div>
+            </div>
+          </div>
+
+          <!-- Lista de Parágrafos -->
+          <div class="editor-content-col">
+            <div class="card transcript-card">
+              <div class="transcript-toolbar">
+                <input
+                  id="transcript-search"
+                  type="search"
+                  class="input-search"
+                  placeholder="Buscar palavra ou frase na transcrição..."
+                />
+                <select id="speaker-filter" class="select-input select-compact">
+                  <option value="all">Todos os locutores</option>
+                </select>
+              </div>
+              <div id="paragraphs-list" class="paragraphs-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast de notificações -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

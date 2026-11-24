@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller / Builds / Pacotes de Release (arquivos grandes)
+build/
+dist/
+*.spec
+releases/
+
+# Dados locais do usuário (nunca enviar transcrições ou áudios pessoais para o GitHub)
+dados/
+exportacoes/
+uploads/
+temp/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.ogg
+*.flac
+
+# IDEs e Sistema Operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
