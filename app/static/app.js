@@ -148,10 +148,17 @@
       const data = await res.json();
       if (data.hardware && data.hardware.cuda_available) {
         hwBadge.classList.add("cuda");
-        hwText.textContent = `GPU NVIDIA CUDA ativa (${data.hardware.cuda_device_count} GPU)`;
+        const vram = data.hardware.cuda_free_vram_mb
+          ? ` · ${(data.hardware.cuda_free_vram_mb / 1024).toFixed(1)} GB livres`
+          : "";
+        hwText.textContent = `GPU NVIDIA CUDA ativa${vram}`;
       } else {
         hwBadge.classList.add("cpu");
         hwText.textContent = `Modo CPU (${data.hardware?.cpu_threads || 4} threads)`;
+        // Em modo CPU (ex: executável Universal sem DLLs CUDA), recomenda 'small' por padrão para evitar esperas longas
+        if (optModel && optModel.value === "large-v3-turbo") {
+          optModel.value = "small";
+        }
       }
     } catch {
       hwText.textContent = "Servidor local conectado";

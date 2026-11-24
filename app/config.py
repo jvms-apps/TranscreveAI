@@ -2,18 +2,36 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
+import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+
+def _add_dll_dir_safe(dir_path: Path, added: List[str]) -> None:
+    if not dir_path.is_dir():
+        return
+    bin_str = str(dir_path)
+    try:
+        os.add_dll_directory(bin_str)
+    except (AttributeError, OSError):
+        pass
+    current_path = os.environ.get("PATH", "")
+    if bin_str.lower() not in current_path.lower():
+        os.environ["PATH"] = bin_str + os.pathsep + current_path
+    if bin_str not in added:
+        added.append(bin_str)
 
 
 def setup_cuda_dlls() -> List[str]:
-    """Registra diretórios de DLLs NVIDIA (cuBLAS / cuDNN) instalados via pip no Windows."""
+    """Registra diretórios de DLLs NVIDIA (cuBLAS / cuDNN) no Windows, inclusive no modo empacotado."""
     added: List[str] = []
     if sys.platform != "win32":
         return added
 
+    # 1. Pacotes nvidia.cublas / nvidia.cudnn instalados no ambiente atual ou empacotados
     for pkg_name in ("nvidia.cublas", "nvidia.cudnn"):
         try:
             mod = __import__(pkg_name, fromlist=["__file__"])
@@ -25,20 +43,15 @@ def setup_cuda_dlls() -> List[str]:
                 if not pkg_paths:
                     continue
                 pkg_root = Path(pkg_paths[0])
-
-            bin_dir = pkg_root / "bin"
-            if bin_dir.is_dir():
-                bin_str = str(bin_dir)
-                try:
-                    os.add_dll_directory(bin_str)
-                except (AttributeError, OSError):
-                    pass
-                current_path = os.environ.get("PATH", "")
-                if bin_str.lower() not in current_path.lower():
-                    os.environ["PATH"] = bin_str + os.pathsep + current_path
-                added.append(bin_str)
+            _add_dll_dir_safe(pkg_root / "bin", added)
         except Exception:
             continue
+
+    # 2. Se rodando como EXE Universal, aproveita DLLs CUDA 12 caso já existam no CUDA Toolkit do sistema
+    cuda_base = Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+    if cuda_base.is_dir():
+        for vdir in sorted(cuda_base.glob("v12.*"), reverse=True):
+            _add_dll_dir_safe(vdir / "bin", added)
 
     return added
 
@@ -148,12 +161,12 @@ DEFAULT_WHISPER_MODEL = "large-v3-turbo"
 # Perfis de qualidade de decodificação Whisper
 QUALITY_PRESETS: Dict[str, Dict[str, str]] = {
     "high": {
-        "label": "Qualidade Máxima (FP16 / Beam 8)",
-        "description": "Precisão nativa sem quantização na GPU (fallback seguro), busca mais profunda e proteção anti-alucinação.",
+        "label": "Qualidade Máxima (FP16 + Anti-alucinação)",
+        "description": "Precisão nativa na GPU (ajuste automático de VRAM), fallback de temperatura e proteção anti-alucinação.",
     },
     "balanced": {
         "label": "Equilibrado (Mais Rápido)",
-        "description": "Ótimo equilíbrio entre velocidade e fidelidade (Beam 5, menor uso de VRAM).",
+        "description": "Ótimo equilíbrio entre velocidade e fidelidade (menor uso de memória).",
     },
 }
 
@@ -215,20 +228,77 @@ DIARIZATION_EMBEDDING_URL = (
 DIARIZATION_EMBEDDING_FILENAME = "wespeaker_en_voxceleb_resnet34_LM.onnx"
 
 
+def _check_cuda_runtime_dlls() -> tuple[bool, Optional[str]]:
+    """Confirma que cuBLAS 12 e cuDNN (ops) realmente podem ser carregados no Windows."""
+    if sys.platform != "win32":
+        return True, None
+
+    try:
+        ctypes.WinDLL("cublas64_12.dll")
+    except OSError:
+        return False, "Biblioteca cublas64_12.dll ausente (usando modo CPU compatível)."
+
+    cudnn_ok = False
+    for dll_name in ("cudnn_ops64_9.dll", "cudnn_ops_infer64_8.dll"):
+        try:
+            ctypes.WinDLL(dll_name)
+            cudnn_ok = True
+            break
+        except OSError:
+            continue
+
+    if not cudnn_ok:
+        return False, "Biblioteca cuDNN ausente (usando modo CPU compatível)."
+
+    return True, None
+
+
+def get_gpu_free_vram_mb() -> Optional[int]:
+    """Consulta rapidamente a VRAM livre (em MiB) da GPU NVIDIA via nvidia-smi."""
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            first_line = res.stdout.strip().splitlines()[0].strip()
+            return int(float(first_line))
+    except Exception:
+        pass
+    return None
+
+
 def detect_hardware() -> Dict[str, object]:
-    """Detecta disponibilidade de GPU CUDA e CPU."""
+    """Detecta disponibilidade REAL de GPU CUDA (driver + DLLs cuBLAS/cuDNN) e CPU."""
     cuda_count = 0
     cuda_error = None
+    cuda_runtime_ok = False
+    free_vram_mb: Optional[int] = None
+
     try:
         import ctranslate2
         cuda_count = ctranslate2.get_cuda_device_count()
     except Exception as exc:
         cuda_error = str(exc)
 
+    if cuda_count > 0:
+        cuda_runtime_ok, runtime_err = _check_cuda_runtime_dlls()
+        if not cuda_runtime_ok:
+            cuda_error = runtime_err
+        else:
+            free_vram_mb = get_gpu_free_vram_mb()
+
+    cuda_ready = cuda_count > 0 and cuda_runtime_ok
+
     return {
-        "cuda_available": cuda_count > 0,
-        "cuda_device_count": cuda_count,
+        "cuda_available": cuda_ready,
+        "cuda_device_count": cuda_count if cuda_ready else 0,
+        "cuda_gpu_detected_without_runtime": (cuda_count > 0 and not cuda_runtime_ok),
+        "cuda_free_vram_mb": free_vram_mb,
         "cuda_error": cuda_error,
         "cpu_threads": os.cpu_count() or 4,
-        "recommended_device": "cuda" if cuda_count > 0 else "cpu",
+        "recommended_device": "cuda" if cuda_ready else "cpu",
     }

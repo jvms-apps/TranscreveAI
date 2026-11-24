@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -62,6 +63,7 @@ class WhisperTranscriber:
 
     def _resolve_device_and_compute(
         self,
+        model_name: str,
         device: str = "auto",
         quality_preset: str = DEFAULT_QUALITY_PRESET,
     ) -> Tuple[str, str]:
@@ -72,9 +74,27 @@ class WhisperTranscriber:
             use_cuda = device == "cuda" and bool(hw["cuda_available"])
 
         if use_cuda:
-            # No modo 'high', usa float16 nativo para precisão máxima (com fallback automático para int8_float16 se faltar VRAM)
-            return "cuda", ("float16" if quality_preset == "high" else "int8_float16")
+            if quality_preset == "high":
+                # Evita Sysmem Fallback (lentidão extrema) quando VRAM livre estiver baixa na GPU
+                free_vram = hw.get("cuda_free_vram_mb")
+                min_fp16_vram = 4200 if model_name in ("large-v3", "large-v2") else 3200
+                if isinstance(free_vram, int) and free_vram < min_fp16_vram:
+                    logger.info(
+                        "VRAM livre (%d MiB) abaixo de %d MiB para FP16 em '%s'; usando int8_float16.",
+                        free_vram,
+                        min_fp16_vram,
+                        model_name,
+                    )
+                    return "cuda", "int8_float16"
+                return "cuda", "float16"
+            return "cuda", "int8_float16"
         return "cpu", "int8"
+
+    def _clear_cached_model_unlocked(self) -> None:
+        if self._cached_model is not None:
+            self._cached_model = None
+            self._cached_key = None
+            gc.collect()
 
     def _get_model(
         self,
@@ -86,7 +106,7 @@ class WhisperTranscriber:
     ):
         from faster_whisper import WhisperModel
 
-        target_device, compute_type = self._resolve_device_and_compute(device, quality_preset)
+        target_device, compute_type = self._resolve_device_and_compute(model_name, device, quality_preset)
         if compute_override:
             compute_type = compute_override
 
@@ -95,10 +115,8 @@ class WhisperTranscriber:
             if self._cached_model is not None and self._cached_key == key:
                 return self._cached_model, target_device, compute_type
 
-            # Libera modelo anterior antes de carregar um novo para economizar VRAM
-            if self._cached_model is not None:
-                self._cached_model = None
-                self._cached_key = None
+            # Libera modelo anterior antes de carregar um novo para economizar VRAM/RAM
+            self._clear_cached_model_unlocked()
 
             if progress_callback:
                 progress_callback(
@@ -107,13 +125,15 @@ class WhisperTranscriber:
                     f"(na 1ª vez o download pode levar alguns instantes)...",
                 )
 
+            cpu_threads = max(4, min(12, (detect_hardware()["cpu_threads"] or 4) // 2))
+
             try:
                 model = WhisperModel(
                     model_name,
                     device=target_device,
                     compute_type=compute_type,
                     download_root=str(WHISPER_MODELS_DIR),
-                    cpu_threads=max(4, (detect_hardware()["cpu_threads"] or 4) // 2),
+                    cpu_threads=cpu_threads,
                 )
                 self._cached_model = model
                 self._cached_key = key
@@ -122,12 +142,14 @@ class WhisperTranscriber:
                 # Se float16 falhou na GPU (ex: VRAM insuficiente), tenta int8_float16 antes de cair para CPU
                 if target_device == "cuda" and compute_type == "float16":
                     logger.warning("Falha ao carregar em CUDA float16 (%s). Tentando CUDA int8_float16...", exc)
+                    self._clear_cached_model_unlocked()
                     try:
                         model = WhisperModel(
                             model_name,
                             device="cuda",
                             compute_type="int8_float16",
                             download_root=str(WHISPER_MODELS_DIR),
+                            cpu_threads=cpu_threads,
                         )
                         self._cached_model = model
                         self._cached_key = (model_name, "cuda", "int8_float16")
@@ -137,6 +159,7 @@ class WhisperTranscriber:
 
                 if target_device == "cuda":
                     logger.warning("Falha ao inicializar Whisper em CUDA (%s). Tentando fallback para CPU...", exc)
+                    self._clear_cached_model_unlocked()
                     if progress_callback:
                         progress_callback(0.04, "GPU indisponível no momento; alternando automaticamente para CPU...")
                     fallback_device, fallback_compute = "cpu", "int8"
@@ -145,6 +168,7 @@ class WhisperTranscriber:
                         device=fallback_device,
                         compute_type=fallback_compute,
                         download_root=str(WHISPER_MODELS_DIR),
+                        cpu_threads=cpu_threads,
                     )
                     self._cached_model = model
                     self._cached_key = (model_name, fallback_device, fallback_compute)
@@ -190,13 +214,23 @@ class WhisperTranscriber:
             raise ValueError(f"WAV esperado em 16000 Hz, mas recebido {sr} Hz.")
 
         def _run_transcribe(active_model):
+            # Na GPU usamos beam_size=5 com fallback de temperatura e anti-alucinação (ótimo equilíbrio velocidade/fidelidade);
+            # Na CPU evitamos beam excessivo que multiplicaria o tempo de processamento.
+            if used_device == "cuda":
+                beam = 5
+                best_of = 5
+                temps = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0) if is_high_quality else 0.0
+            else:
+                beam = 5 if is_high_quality else 2
+                best_of = 3 if is_high_quality else 1
+                temps = (0.0, 0.2, 0.4) if is_high_quality else 0.0
+
             kwargs = {
                 "language": lang_arg,
                 "task": "transcribe",
-                "beam_size": 8 if is_high_quality else 5,
-                "best_of": 5,
-                "patience": 1.2 if is_high_quality else 1.0,
-                "temperature": (0.0, 0.2, 0.4, 0.6, 0.8, 1.0) if is_high_quality else 0.0,
+                "beam_size": beam,
+                "best_of": best_of,
+                "temperature": temps,
                 "compression_ratio_threshold": 2.4,
                 "log_prob_threshold": -1.0,
                 "no_speech_threshold": 0.6,
@@ -268,25 +302,47 @@ class WhisperTranscriber:
                     pct_display = int(ratio * 100)
                     progress_callback(ratio, f"Transcrevendo fala... ({pct_display}%)")
 
-        except RuntimeError as exc:
-            # Fallback automático se ocorrer erro de CUDA/VRAM durante a inferência
+        except Exception as exc:
+            # Libera o modelo GPU antes de qualquer fallback para evitar retenção dupla de VRAM
             err_lower = str(exc).lower()
-            is_cuda_err = any(k in err_lower for k in ("cuda", "cublas", "cudnn", "out of memory"))
-            if used_device == "cuda" and used_compute == "float16" and is_cuda_err:
-                logger.warning("VRAM/CUDA float16 insuficiente (%s). Repetindo em CUDA int8_float16...", exc)
-                if progress_callback:
-                    progress_callback(0.1, "Otimizando memória da GPU (int8_float16)...")
-                return self.transcribe(
-                    wav_path=wav_path,
-                    model_name=model_name,
-                    language=language,
-                    device="cuda",
-                    quality_preset=quality_preset,
-                    initial_prompt=initial_prompt,
-                    progress_callback=progress_callback,
-                    _compute_override="int8_float16",
-                )
-            if used_device == "cuda" and is_cuda_err:
+            is_cuda_dll_err = any(k in err_lower for k in ("cublas", "cudnn", "not found", "cannot be loaded"))
+            is_cuda_mem_err = any(k in err_lower for k in ("out of memory", "cuda", "alloc"))
+
+            if used_device == "cuda" and (is_cuda_dll_err or is_cuda_mem_err):
+                del model
+                with self._lock:
+                    self._clear_cached_model_unlocked()
+
+                # Se o erro for falta de DLL CUDA/cuBLAS/cuDNN, pula direto para CPU (não tenta outra precisão CUDA!)
+                if is_cuda_dll_err:
+                    logger.warning("Biblioteca CUDA ausente (%s). Alternando diretamente para CPU...", exc)
+                    if progress_callback:
+                        progress_callback(0.1, "Bibliotecas CUDA ausentes neste pacote; usando CPU automaticamente...")
+                    return self.transcribe(
+                        wav_path=wav_path,
+                        model_name=model_name,
+                        language=language,
+                        device="cpu",
+                        quality_preset=quality_preset,
+                        initial_prompt=initial_prompt,
+                        progress_callback=progress_callback,
+                    )
+
+                if used_compute == "float16":
+                    logger.warning("VRAM insuficiente em CUDA float16 (%s). Repetindo em CUDA int8_float16...", exc)
+                    if progress_callback:
+                        progress_callback(0.1, "Otimizando memória da GPU (int8_float16)...")
+                    return self.transcribe(
+                        wav_path=wav_path,
+                        model_name=model_name,
+                        language=language,
+                        device="cuda",
+                        quality_preset=quality_preset,
+                        initial_prompt=initial_prompt,
+                        progress_callback=progress_callback,
+                        _compute_override="int8_float16",
+                    )
+
                 logger.warning("Erro CUDA durante transcrição (%s). Repetindo em CPU...", exc)
                 if progress_callback:
                     progress_callback(0.1, "Ajustando para CPU devido à memória/runtime da GPU...")
